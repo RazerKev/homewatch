@@ -1,0 +1,28 @@
+# Home Assistant app (formerly "add-on") manifest.
+# Install: copy this whole agent/ folder to /addons/homewatch_agent on the Pi, then
+# Settings > Apps > App store > (three dots) Check for updates > Local apps.
+name: HomeWatch Agent
+version: "0.1.0"
+slug: homewatch_agent
+description: Forwards sensor events and heartbeats to the HomeWatch cloud.
+arch:
+  - aarch64
+  - amd64
+startup: application   # start after Home Assistant Core
+boot: auto
+init: true             # Docker's init forwards SIGTERM so the agent shuts down cleanly
+homeassistant_api: true  # lets the app reach HA's WebSocket API via the Supervisor proxy
+options:
+  api_url: null        # null = required; the app won't start until it's set
+  api_key: null
+  heartbeat_interval_s: 60
+  platforms:
+    - zha
+  log_level: info
+schema:
+  api_url: url
+  api_key: password
+  heartbeat_interval_s: int(15,3600)
+  platforms:
+    - str
+  log_level: list(debug|info|warning|error)

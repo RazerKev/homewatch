@@ -1,0 +1,5 @@
+# Keep Unix line endings even on Windows checkouts. Home Assistant's app builder and
+# any shell script break on CRLF, and Git for Windows converts by default.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

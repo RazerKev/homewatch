@@ -1,0 +1,78 @@
+# Phase 1 "cloud", running locally: PostgreSQL + API + heartbeat watchdog.
+# Phase 3 moves the same pieces to AWS (RDS, Lambda + API Gateway, EventBridge).
+#
+#   copy .env.example .env      # then set POSTGRES_PASSWORD in .env
+#   docker compose up -d --build
+#   docker compose run --rm api python -m app.cli create-home home-001
+
+name: homewatch
+
+x-app: &app
+  build: ./api
+  image: homewatch-api:local
+  environment: &app-env
+    DATABASE_URL: postgresql+psycopg://homewatch:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/homewatch
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: homewatch
+      POSTGRES_USER: homewatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"  # this computer only (psql, DBeaver) — never your network
+    healthcheck:
+      # -h 127.0.0.1 checks over TCP, like the other services connect. Without it, the
+      # check can pass during Postgres's first-boot setup, before it accepts TCP connections.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U homewatch -d homewatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot job: bring the schema up to date, then exit. api and watchdog wait for it.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      EXPOSE_DOCS: "true"  # Swagger UI at http://localhost:8000/docs
+    ports:
+      - "8000:8000"  # reachable from the Pi on your home network
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # The piece that notices when a home goes quiet. Runs here, never on the Pi.
+  watchdog:
+    <<: *app
+    command: ["python", "-m", "app.watchdog"]
+    environment:
+      <<: *app-env
+      WATCHDOG_INTERVAL_S: ${WATCHDOG_INTERVAL_S:-30}
+      ALERT_TIMEZONE: ${ALERT_TIMEZONE:-America/New_York}
+      NTFY_URL: ${NTFY_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
