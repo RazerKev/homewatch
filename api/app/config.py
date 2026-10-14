@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
     # e.g. postgresql+psycopg://homewatch:<password>@db:5432/homewatch
     database_url: SecretStr
@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     def _blank_is_none(cls, value: object) -> object:
         # Docker Compose passes unset variables as empty strings.
         return None if value == "" else value
+    
+    @field_validator("ntfy_url")
+    @classmethod
+    def _ntfy_url_is_web_address(cls, value: SecretStr | None) -> SecretStr | None:
+        # Fail at startup, not at the first alert. In the pilot, a URL without https://
+        # made every delivery fail with ValueError while the watchdog looked healthy.
+        if value is not None and not value.get_secret_value().startswith(("https://", "http://")):
+            raise ValueError("must start with https://, like https://ntfy.sh/your-topic")
+        return value
 
 
 @lru_cache
