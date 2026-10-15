@@ -42,7 +42,6 @@ class Settings(BaseSettings):
             raise ValueError("must start with https://, like https://ntfy.sh/your-topic")
         return value
 
-
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]  # values come from the environment

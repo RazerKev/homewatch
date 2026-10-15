@@ -21,4 +21,9 @@ def test_error_does_not_show_the_topic():
 def test_accepts_full_ntfy_url():
     # The pilot bug: NTFY_URL wasn't a full web address, so every alert failed to send.
     settings = Settings(database_url=DB, ntfy_url="https://ntfy.sh/homewatch-test")
-    assert settings.ntfy_url.get_secret_value() == settings.ntfy_url.get_secret_value()  # round-trip through SecretStr
+    assert settings.ntfy_url.get_secret_value() == "https://ntfy.sh/homewatch-test"  # round-trip through SecretStr
+
+def test_blank_ntfy_url_means_no_phone_alerts():
+    # The pilot bug: Docker Compose passes unset variables as empty strings, so the validator must convert "" to None.
+    settings = Settings(database_url=DB, ntfy_url="")
+    assert settings.ntfy_url is None
