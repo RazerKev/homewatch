@@ -17,3 +17,15 @@ jobs:
                     python-version: "3.12"  # same version as the Docker image
             -   run: pip install -r requirements-dev.txt
             -   run: python -m pytest
+    agent-test:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: agent
+        steps:
+            -   uses: actions/checkout@v6
+            -   uses: actions/setup-python@v7
+                with:
+                    python-version: "3.12"  # same version as the agent's Docker image
+            -   run: pip install -r requirements-dev.txt
+            -   run: python -m pytest

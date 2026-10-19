@@ -20,7 +20,9 @@ from pathlib import Path
 APP_OPTIONS = Path("/data/options.json")
 
 # Only these device classes are ever forwarded. Anything else (signal strength, link
-# quality, firmware, identify buttons...) stays in the house.
+# quality, firmware, identify buttons...) stays in the house. So do a plug's voltage
+# and current: they change every few seconds and were 89% of all events, while power
+# alone tells us whether a dehumidifier or sump pump is running.
 DEFAULT_DEVICE_CLASSES = frozenset(
     {
         # water, freeze, and safety
@@ -29,7 +31,7 @@ DEFAULT_DEVICE_CLASSES = frozenset(
         "door", "window", "garage_door", "opening", "motion", "occupancy", "presence",
         "tamper", "vibration",
         # measurements
-        "temperature", "humidity", "illuminance", "power", "energy", "current", "voltage",
+        "temperature", "humidity", "illuminance", "power", "energy",
         "water", "volume_flow_rate",
         # upkeep
         "battery",

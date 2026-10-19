@@ -2,7 +2,7 @@
 # Install: copy this whole agent/ folder to /addons/homewatch_agent on the Pi, then
 # Settings > Apps > App store > (three dots) Check for updates > Local apps.
 name: HomeWatch Agent
-version: "0.1.0"
+version: "0.2.0"
 slug: homewatch_agent
 description: Forwards sensor events and heartbeats to the HomeWatch cloud.
 arch:

@@ -24,3 +24,11 @@ def forwarded(state_obj):
 
 def test_voltage_reading_stays_in_the_house():
     assert forwarded(reading("voltage", "121.4")) is None
+
+def test_current_reading_stays_in_the_house():
+    assert forwarded(reading("current", "5.2")) is None
+    
+def test_power_reading_is_still_sent():
+    event = forwarded(reading("power", "628.0"))
+    assert event is not None
+    assert event["device_class"] == "power"
