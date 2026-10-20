@@ -28,9 +28,16 @@ def evaluate(
     last_heartbeat_at: datetime | None,
     last_healthy_at: datetime | None,
     offline_after: timedelta,
+    watching_since: datetime | None = None,
 ) -> HomeStatus:
     if last_heartbeat_at is None:
         return HomeStatus.PENDING
+    if watching_since is not None:
+        # Silence from before the watchdog was running proves nothing. Judge every
+        # home as if it last checked in when the watchdog started.
+        last_heartbeat_at = max(last_heartbeat_at, watching_since)
+        if last_healthy_at is not None:
+            last_healthy_at = max(last_healthy_at, watching_since)
     if now - last_heartbeat_at > offline_after:
         return HomeStatus.OFFLINE
     if last_healthy_at is None or now - last_healthy_at > offline_after:

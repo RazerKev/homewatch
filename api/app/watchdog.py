@@ -24,7 +24,7 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
@@ -49,14 +49,14 @@ class CheckResult:
     alerts_failed: int
 
 
-def run_check(session: Session, sinks: list[AlertSink], tz: ZoneInfo) -> CheckResult:
+def run_check(session: Session, sinks: list[AlertSink], tz: ZoneInfo, watching_since: datetime | None = None) -> CheckResult:
     """One full pass: detect status changes, then deliver any pending alerts."""
-    transitions = detect_transitions(session, tz)
+    transitions = detect_transitions(session, tz, watching_since)
     delivered, failed = deliver_pending_alerts(session, sinks)
     return CheckResult(transitions, delivered, failed)
 
 
-def detect_transitions(session: Session, tz: ZoneInfo) -> int:
+def detect_transitions(session: Session, tz: ZoneInfo, watching_since: datetime | None = None) -> int:
     now = session.scalar(select(func.now()))
     homes = session.execute(
         select(
@@ -79,6 +79,7 @@ def detect_transitions(session: Session, tz: ZoneInfo) -> int:
             last_heartbeat_at=home.last_heartbeat_at,
             last_healthy_at=home.last_healthy_at,
             offline_after=timedelta(seconds=home.offline_after_s),
+            watching_since=watching_since,
         )
         if new == old:
             continue
@@ -181,11 +182,17 @@ def main() -> None:
         "watchdog started",
         extra={"interval_s": settings.watchdog_interval_s, "channels": [type(s).__name__ for s in sinks]},
     )
+    watching_since = None # set from the database clock by the first check that reaches it
     while not stop.is_set():
         started = time.monotonic()
         try:
             with make_session() as session:
-                result = run_check(session, sinks, tz)
+                if watching_since is None:
+                    watching_since = session.scalar(select(func.now()))
+                    log.info(
+                        "watching homes", extra={"since": watching_since.isoformat()}
+                    )
+                result = run_check(session, sinks, tz, watching_since)
             if result.transitions or result.alerts_delivered or result.alerts_failed:
                 log.info("check complete", extra=vars(result))
         except Exception:  # noqa: BLE001 — database down etc.; try again next tick
