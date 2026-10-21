@@ -1,4 +1,5 @@
 # HomeWatch — cloud layer
+![tests](https://github.com/RazerKev/homewatch/actions/workflows/tests.yml/badge.svg)
 
 The cloud side of a home-monitoring service built on Home Assistant and Zigbee sensors.
 Each home runs a small **agent** on its Raspberry Pi that forwards sensor events and sends
@@ -9,8 +10,7 @@ home goes quiet — a power cut, an internet outage, a dead hub — and sends an
 > internet can't report its own failure, so something outside the home has to notice the
 > silence.
 
-This is **Phase 1**: everything runs locally with Docker Compose. Later phases add tests
-and CI (2), AWS deployment (3), fault-injection testing (4), and anomaly detection (5).
+**Phase 1** runs everything locally with Docker Compose, and **Phase 2** added tests and CI on every push. Next come AWS deployment (3), fault-injection testing (4), and anomaly detection (5).
 
 ```
   HOME  (Raspberry Pi, Home Assistant OS)            CLOUD  (Docker Compose now, AWS in Phase 3)
@@ -186,6 +186,20 @@ test, run this **on the Pi** (in Home Assistant's Terminal app, which uses bash)
 > In Phase 1 your PC *is* the cloud: when it's off, nothing is watching. That's expected
 > until Phase 3 moves the stack to AWS. (A spare Pi running Docker also works as an
 > always-on stand-in.)
+
+---
+
+## Running tests
+
+The API and the agent each have their own tests. From the repo root:
+
+```powershell
+cd api
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+For the agent, run the same commands from the `agent` folder. GitHub Actions runs both on every push.
 
 ---
 
