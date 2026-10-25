@@ -1,7 +1,7 @@
-# HomeWatch — cloud layer
+# HomeWatch
 ![tests](https://github.com/RazerKev/homewatch/actions/workflows/tests.yml/badge.svg)
 
-The cloud side of a home-monitoring service built on Home Assistant and Zigbee sensors.
+A home-monitoring service built on Home Assistant and Zigbee sensors.
 Each home runs a small **agent** on its Raspberry Pi that forwards sensor events and sends
 a heartbeat. The **cloud** stores the events and runs a **watchdog** that notices when a
 home goes quiet — a power cut, an internet outage, a dead hub — and sends an alert.
@@ -26,23 +26,47 @@ home goes quiet — a power cut, an internet outage, a dead hub — and sends an
 
 ---
 
+## What running it taught me
+
+HomeWatch has run in my own house since October 2026, and real data turned up problems
+the test plan didn't:
+
+- **Most of the data was noise.** A SQL breakdown of the events table showed 89% of stored
+  events were smart-plug voltage and current readings. Power alone shows whether a
+  dehumidifier or sump pump is running, so the agent stopped sending voltage and current,
+  test first (agent 0.2.0).
+- **A false alarm every time the PC started.** After hours off, the watchdog saw an
+  hours-old heartbeat before the agent's next one arrived, so it sent OFFLINE, then
+  recovered. It now ignores silence from before it started watching. To prove it, I
+  stopped the cloud side for 7 minutes and started it again: no alert.
+- **Alert on the outcome, not one cause.** The basement reached 67% humidity while the
+  dehumidifier's bucket sat full for five days; the bucket-full alert had fired once and
+  gone quiet. A Home Assistant automation now checks every evening and alerts while it's
+  humid and the dehumidifier isn't drawing power.
+
+---
+
 ## Repository layout
 
 ```
 api/                  cloud service — one Docker image, three jobs
   app/main.py           FastAPI endpoints + per-home API key auth
   app/models.py         SQLAlchemy tables (homes, heartbeats, events, alerts)
-  app/health.py         pure "is this home stale?" logic (unit-test target)
+  app/health.py         pure "is this home stale?" logic (unit-tested)
   app/watchdog.py       offline/degraded detection + alert delivery
   app/alerts.py         alert wording, log + ntfy channels
   app/cli.py            operator CLI: create homes, rotate keys, list status/alerts
+  app/config.py         settings from the environment, checked at startup
   app/logging_setup.py  JSON logs with no personal data
   migrations/           Alembic schema migrations
+  tests/                pytest: health rules, settings, alert channels
 agent/                the Pi side — also a Home Assistant app folder
   homewatch_agent/      HA WebSocket client, SQLite outbox, uploader, heartbeat
+  tests/                pytest: which sensor readings leave the house
   config.yaml, Dockerfile, DOCS.md   Home Assistant app packaging
 tools/fake_ha.py      a fake Home Assistant, for testing without a Pi
 docker-compose.yml    Postgres + migrations + API + watchdog
+.github/workflows/    CI: runs both test suites on every push
 ```
 
 ---
@@ -168,7 +192,8 @@ lines don't need repeating.
 
 The agent is packaged as a local Home Assistant **app** (Home Assistant's new name for add-ons).
 
-1. From the App store, install **Samba share** (or **Terminal & SSH**) to reach the Pi's `addons` folder.
+1. From the App store, install **Samba share** (or **Terminal & SSH**) to reach the Pi's `addons` folder
+   (newer versions of Samba share also list it as `local_apps`).
 2. Copy the `agent` folder there as `homewatch_agent`, so `addons/homewatch_agent/config.yaml` exists.
 3. **Settings > Apps > App store**, then the three-dot menu > **Check for updates**. A
    **Local apps** section appears with **HomeWatch Agent**. Install it (it builds on the
@@ -253,7 +278,7 @@ All `/v1` routes need `Authorization: Bearer <hwk_ key>`.
 **`POST /v1/heartbeat`** — proof of life.
 
 ```json
-{"sent_at": "2026-09-27T17:00:00Z", "agent_version": "0.1.0", "ha_ok": true, "outbox_depth": 0, "dead_letters": 0}
+{"sent_at": "2026-09-27T17:00:00Z", "agent_version": "0.2.0", "ha_ok": true, "outbox_depth": 0, "dead_letters": 0}
 ```
 → `200 {"status": "ok", "server_time": "..."}` (the agent uses `server_time` to warn about a wrong Pi clock)
 
@@ -295,6 +320,12 @@ outbox), then delivered separately with `SELECT ... FOR UPDATE SKIP LOCKED`, so 
 can't lose an alert and two watchdogs can't double-send one. Verified with four
 watchdogs running at once: exactly one alert per transition.
 
+**Silence from before the watchdog started proves nothing.** When the watchdog itself has
+been down (a PC restart, a deploy), every home's last heartbeat looks old when it comes
+back. So it judges each home as if it last checked in when the watchdog started. Its own
+downtime never becomes a false OFFLINE alert, and a home still silent 5 minutes later is
+flagged as usual.
+
 **A fourth table.** The spec named three (homes, heartbeats, events); `alerts` is that
 outbox, and doubles as the audit trail of what was sent and when — which matters for a
 monitoring business.
@@ -335,8 +366,9 @@ SQLAlchemy's `hide_parameters` keeps row values out of error messages, and 422 r
 don't echo the rejected input.
 
 **Plain, testable pieces.** `health.py` and `agent/homewatch_agent/events.py` are pure
-functions — the natural first targets for Phase 2 unit tests. Sync SQLAlchemy in
-FastAPI's threadpool keeps the code simple, and it moves to Lambda unchanged.
+functions, so their unit tests need no database or network, and GitHub Actions runs both
+test suites on every push. Sync SQLAlchemy in FastAPI's threadpool keeps the code simple,
+and it moves to Lambda unchanged.
 
 ---
 
@@ -348,6 +380,8 @@ FastAPI's threadpool keeps the code simple, and it moves to Lambda unchanged.
 - Postgres is bound to `127.0.0.1` only; the API is the one thing exposed to your network.
 - Containers run as a non-root user (the Pi app runs as root inside its container because `/data` is root-owned).
 - `.gitattributes` forces LF line endings so Windows checkouts don't break the Pi build.
+- Before going public, the full git history was scanned with gitleaks (no leaks) and
+  searched for personal details; commits use GitHub's no-reply email.
 
 ## Known limits (and which phase fixes them)
 
@@ -368,7 +402,12 @@ FastAPI's threadpool keeps the code simple, and it moves to Lambda unchanged.
 | Phase | What | Skills |
 |---|---|---|
 | 1 ✅ | Local API, schema, agent, watchdog | FastAPI, PostgreSQL, SQLAlchemy/Alembic, Docker Compose, asyncio |
-| 2 | Unit + integration tests, GitHub Actions (test on push, build image) | pytest, CI/CD |
+| 2 ✅ | Unit tests for the API and agent, GitHub Actions on every push | pytest, GitHub Actions |
 | 3 | AWS: API on Lambda + API Gateway (cheapest at this scale), RDS, EventBridge watchdog, SNS alerts, S3 archive, CloudWatch | AWS Lambda, S3, CloudWatch, IAM |
 | 4 | Automated fault injection: time-to-alert under a threshold, malformed and duplicate data | test automation, reliability engineering |
 | 5 | Anomaly detection: freezer drift, unusual water use | time-series analysis, ML |
+
+---
+
+© 2026 Kevin (RazerKev). All rights reserved. Shared so people can review my work;
+not licensed for reuse.
