@@ -1,0 +1,27 @@
+# Server-only additions on top of docker-compose.yml: HTTPS in front of the API.
+# On the server, .env sets COMPOSE_FILE so plain "docker compose" uses both files.
+
+services:
+  api:
+    ports: !reset []           # nothing reaches the API directly; only Caddy does
+    environment:
+      EXPOSE_DOCS: "false"     # no public Swagger page on the internet
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env}
+    ports:
+      - "80:80"                # Let's Encrypt's domain check, then redirect to HTTPS
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # certificates survive restarts
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:
