@@ -10,13 +10,13 @@ home goes quiet — a power cut, an internet outage, a dead hub — and sends an
 > internet can't report its own failure, so something outside the home has to notice the
 > silence.
 
-**Phase 1** runs everything locally with Docker Compose, and **Phase 2** added tests and CI on every push. Next come AWS deployment (3), fault-injection testing (4), and anomaly detection (5).
+**Phase 1** ran everything locally with Docker Compose, and **Phase 2** added tests and CI on every push. Since Nov 16, 2026, the cloud side runs on **AWS**: one EC2 server running the same Docker Compose stack behind HTTPS (Phase 3A). Next come backups and alarms, then fault-injection testing (4) and anomaly detection (5).
 
 ```
-  HOME  (Raspberry Pi, Home Assistant OS)            CLOUD  (Docker Compose now, AWS in Phase 3)
+  HOME  (Raspberry Pi, Home Assistant OS)            CLOUD  (one AWS EC2 server, Docker Compose)
  +-----------------------------------------+        +---------------------------------------------+
  |  Zigbee sensors --> Home Assistant       |        |   FastAPI  /v1/events  ------> PostgreSQL    |
- |                        |  WebSocket      |  HTTP  |            /v1/heartbeat        homes         |
+ |                        |  WebSocket      | HTTPS  |            /v1/heartbeat        homes         |
  |                        v                 | -----> |                                 heartbeats    |
  |  HomeWatch agent (Home Assistant app)    |  API   |                                 events        |
  |    SQLite outbox: nothing lost offline   |  key   |   Watchdog, every 30 s:  -----> alerts        |
@@ -46,6 +46,45 @@ the test plan didn't:
 
 ---
 
+## Running on AWS
+
+Since Nov 16, 2026, the cloud side runs on one AWS EC2 server in Ohio (`us-east-2`),
+using the same Docker Compose stack as a laptop. One server came first because it moved
+the working system to an always-on machine in days, with no code changes. The serverless
+version (Lambda, API Gateway, RDS) is Phase 3B.
+
+| Piece | Setup | Why |
+|---|---|---|
+| Server | EC2 `t4g.small` (Arm), Ubuntu 26.04 LTS, 20 GiB gp3 disk, 2 GB swap | Small and cheap, and the same Arm architecture as the Pi |
+| Access | AWS Systems Manager Session Manager: no SSH key, no port 22 | Nothing to brute-force; access goes through AWS sign-in with MFA |
+| Network | Elastic IP and a DNS record; the security group allows only ports 80 and 443 | A fixed address, and only web traffic gets in |
+| HTTPS | Caddy reverse proxy with automatic Let's Encrypt certificates | The API is never reachable directly, and certificates renew on their own |
+| Production settings | `docker-compose.prod.yml` adds Caddy, removes the API's published port (`ports: !reset []`) and turns off the Swagger page; `.env` sets `COMPOSE_FILE` so plain `docker compose` uses both files | One compose file for development, a small override for production |
+| Secrets | `.env` lives only on the server (`chmod 600`), with a database password from `openssl rand` | Nothing secret in git |
+| Storage | A private S3 bucket in the account regional namespace, public access blocked, encrypted | Carried the database during the move; will hold nightly backups |
+| Cost | Roughly $15–20 a month, covered by AWS credits at first, with a budget alert | |
+
+Live health check: https://api.tidelinehomemonitoring.com/healthz
+
+### Moving the live system (Nov 16, 2026)
+
+The move from my PC to AWS lost no data:
+
+1. Stopped the PC's API and watchdog. From then on, the Pi kept every new reading in its outbox.
+2. Copied the database with `pg_dump -Fc`: 265,656 events, 13,098 heartbeats and 26 alerts, in a 10.8 MB file.
+3. Carried the copy through S3 with a 60-minute presigned link, then loaded it on the
+   server with `pg_restore --clean --if-exists --single-transaction`. The row counts matched exactly.
+4. Pointed the Pi's agent at the new HTTPS address. It delivered 1,242 buffered readings in
+   about a second, and the API's duplicate check dropped the 9 it already had:
+   265,656 + 1,233 new + 1 live reading = 266,890, the server's count.
+5. Started the AWS watchdog and tested the whole path: stopping the agent for 5½ minutes
+   brought an OFFLINE alert, then a recovered alert, to my phone, sent from AWS.
+
+The copy was rehearsed first on practice databases: it loaded cleanly, the home's existing
+API key still worked, and resent events counted as duplicates.
+
+---
+
 ## Repository layout
 
 ```
@@ -66,6 +105,8 @@ agent/                the Pi side — also a Home Assistant app folder
   config.yaml, Dockerfile, DOCS.md   Home Assistant app packaging
 tools/fake_ha.py      a fake Home Assistant, for testing without a Pi
 docker-compose.yml    Postgres + migrations + API + watchdog
+docker-compose.prod.yml  server-only additions: Caddy, no open API port, docs off
+deploy/Caddyfile      HTTPS in front of the API on the AWS server
 .github/workflows/    CI: runs both test suites on every push
 ```
 
@@ -198,7 +239,8 @@ The agent is packaged as a local Home Assistant **app** (Home Assistant's new na
 3. **Settings > Apps > App store**, then the three-dot menu > **Check for updates**. A
    **Local apps** section appears with **HomeWatch Agent**. Install it (it builds on the
    Pi; give it a few minutes).
-4. **Configuration** tab: `api_url` = `http://<your PC's IP>:8000`, `api_key` = your key. Save.
+4. **Configuration** tab: `api_url` = `http://<your PC's IP>:8000` for local testing (in
+   production it's the AWS server's `https://` address), `api_key` = your key. Save.
    (Find the IP by running `ipconfig` in PowerShell: the *IPv4 Address* under your Wi-Fi
    or Ethernet adapter, e.g. `192.168.1.50`.)
 5. **Info** tab: turn on **Start on boot** and **Watchdog**, then **Start**. The **Log** tab
@@ -208,9 +250,8 @@ If the Pi can't reach your PC, allow inbound TCP 8000 in Windows Defender Firewa
 test, run this **on the Pi** (in Home Assistant's Terminal app, which uses bash):
 `curl http://<your PC's IP>:8000/healthz`.
 
-> In Phase 1 your PC *is* the cloud: when it's off, nothing is watching. That's expected
-> until Phase 3 moves the stack to AWS. (A spare Pi running Docker also works as an
-> always-on stand-in.)
+> Run this way, your PC *is* the cloud: when it's off, nothing is watching. That's why the
+> real stack moved to an always-on AWS server in Phase 3 (see Running on AWS above).
 
 ---
 
@@ -298,9 +339,10 @@ All `/v1` routes need `Authorization: Bearer <hwk_ key>`.
 ## Design decisions (and why)
 
 **The watchdog runs off the Pi.** Detection has to live somewhere that survives the
-failure it's detecting. Locally it's its own container; in Phase 3 it's a scheduled
-Lambda. *Who watches the watchdog?* In Phase 3, a CloudWatch alarm on the Lambda's
-errors and missed runs.
+failure it's detecting. Locally it's its own container, and on AWS it's the same
+container on the EC2 server (a scheduled Lambda in Phase 3B). *Who watches the watchdog?*
+Next: a CloudWatch alarm on the server's health checks, plus an outside check that alerts
+if the watchdog itself goes quiet.
 
 **Only the server's clock counts.** A Raspberry Pi has no real-time clock and can boot
 with the wrong time. Staleness is computed from `received_at` (database time), never
@@ -378,24 +420,28 @@ and it moves to Lambda unchanged.
 - API keys: shown once by the CLI, stored hashed, rotatable (`rotate-key`) and revocable (`deactivate`).
 - On the Pi, the key lives in the app's configuration (Home Assistant's storage), not in files you edit.
 - Postgres is bound to `127.0.0.1` only; the API is the one thing exposed to your network.
-- Containers run as a non-root user (the Pi app runs as root inside its container because `/data` is root-owned).
+- On AWS, only Caddy listens on the internet (ports 80 and 443). The API and Postgres have
+  no public ports, and the server has no SSH port.
+- The HomeWatch containers run as a non-root user (the Pi app runs as root inside its container because `/data` is root-owned).
 - `.gitattributes` forces LF line endings so Windows checkouts don't break the Pi build.
 - Before going public, the full git history was scanned with gitleaks (no leaks) and
   searched for personal details; commits use GitHub's no-reply email.
 
 ## Known limits (and which phase fixes them)
 
-- **Plain HTTP on your home network.** Fine for Phase 1 on a LAN; Phase 3 is HTTPS only.
-- **No rate limiting or request-size cap** on the local API — API Gateway provides both (Phase 3).
+- **No backups or server alarm yet.** The database lives on the server's EBS disk, which
+  survives reboots; nightly backups to S3 and a CloudWatch alarm come next.
+- **Plain HTTP when run locally.** Fine on a home network; the AWS server is HTTPS only.
+- **No rate limiting or request-size cap** yet — API Gateway provides both (Phase 3B).
 - **No data retention yet.** At a 60 s heartbeat, each home adds ~1,440 heartbeat rows a
   day. Phase 3 archives raw data to S3 and prunes old rows.
 - **The cloud doesn't alert on sensor events** (a leak, say). Home Assistant's local
   automations own that fast path; the cloud owns "this home went quiet".
 - **No flap damping.** A home on a very flaky connection could alternate offline/recovered.
-- **One request per event when things are quiet.** Fine locally; before Phase 3 (where
+- **One request per event when things are quiet.** Fine locally; before Phase 3B (where
   requests cost money) the uploader gets a short linger so bursts share one request.
-- **Cost heads-up for Phase 3:** RDS is the one piece with an always-on hourly price;
-  everything else here is effectively free at this scale. The billing alarm comes first.
+- **Cost heads-up for Phase 3B:** RDS is the one piece with an always-on hourly price;
+  everything else here is effectively free at this scale. A budget alert is already in place.
 
 ## Roadmap
 
@@ -403,7 +449,8 @@ and it moves to Lambda unchanged.
 |---|---|---|
 | 1 ✅ | Local API, schema, agent, watchdog | FastAPI, PostgreSQL, SQLAlchemy/Alembic, Docker Compose, asyncio |
 | 2 ✅ | Unit tests for the API and agent, GitHub Actions on every push | pytest, GitHub Actions |
-| 3 | AWS: API on Lambda + API Gateway (cheapest at this scale), RDS, EventBridge watchdog, SNS alerts, S3 archive, CloudWatch | AWS Lambda, S3, CloudWatch, IAM |
+| 3A | Live since Nov 16, 2026: one EC2 server running the same Compose stack, HTTPS with Caddy, Session Manager instead of SSH, the live system moved over with no data lost. Next: nightly backups to S3, a CloudWatch alarm and an outside check | EC2, IAM, S3, Systems Manager, DNS, TLS |
+| 3B | Serverless: API on Lambda + API Gateway (cheapest at this scale), RDS, EventBridge watchdog, SNS alerts, S3 archive, CloudWatch | AWS Lambda, API Gateway, RDS, EventBridge |
 | 4 | Automated fault injection: time-to-alert under a threshold, malformed and duplicate data | test automation, reliability engineering |
 | 5 | Anomaly detection: freezer drift, unusual water use | time-series analysis, ML |
 
