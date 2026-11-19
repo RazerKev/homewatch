@@ -1,0 +1,11 @@
+# Runs deploy/backup.sh once. Started every night by homewatch-backup.timer.
+[Unit]
+Description=HomeWatch nightly database backup to S3
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/homewatch
+EnvironmentFile=/opt/homewatch/.env
+ExecStart=/usr/bin/bash /opt/homewatch/deploy/backup.sh

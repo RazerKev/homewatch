@@ -1,0 +1,11 @@
+# Every night at 3:30 a.m. New York time. Persistent=true runs a missed backup
+# as soon as the server is back up.
+[Unit]
+Description=Back up the HomeWatch database every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target
